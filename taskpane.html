@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better TOC</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --mut:#6b7280; --line:#e5e7eb; --acc:#2b579a; --acc2:#1e3f73; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:14px; font:14px/1.4 "Segoe UI",system-ui,sans-serif; color:var(--fg); background:var(--bg); }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .sub { color:var(--mut); font-size:12px; margin-bottom:14px; }
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:0 0 12px; }
+  legend { font-size:12px; font-weight:600; color:var(--mut); padding:0 6px; text-transform:uppercase; letter-spacing:.04em; }
+  label { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:6px 0; }
+  label.chk { justify-content:flex-start; }
+  input[type=text], input[type=number], select { width:130px; padding:5px 7px; border:1px solid #cbd5e1; border-radius:5px; font:inherit; }
+  input[type=text].wide { width:100%; }
+  input[type=color] { width:44px; height:28px; padding:0; border:1px solid #cbd5e1; border-radius:5px; background:none; }
+  button { width:100%; padding:9px; border:0; border-radius:6px; font:inherit; font-weight:600; cursor:pointer; margin-bottom:8px; }
+  .primary { background:var(--acc); color:#fff; } .primary:hover { background:var(--acc2); }
+  .ghost { background:#eef2f7; color:var(--fg); } .ghost:hover { background:#e2e8f0; }
+  #status { font-size:12px; padding:8px 10px; border-radius:6px; background:#f3f4f6; color:var(--mut); min-height:34px; }
+  #status.ok { background:#e8f5e9; color:#1b5e20; } #status.err { background:#fdecea; color:#b71c1c; }
+  #preview { max-height:150px; overflow:auto; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:12px; }
+  #preview div { padding:1px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row2 { display:flex; gap:8px; } .row2 button { margin-bottom:0; }
+  .hint { font-size:11px; color:var(--mut); margin-top:6px; }
+</style>
+</head>
+<body>
+  <h1>Better TOC</h1>
+  <div class="sub">Clickable table of contents you can actually style.</div>
+
+  <fieldset>
+    <legend>Content</legend>
+    <label>Title <input type="text" id="title" value="Table of Contents"></label>
+    <label>Include levels
+      <select id="levels"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option></select>
+    </label>
+    <label class="chk"><input type="checkbox" id="numbering"> Number entries (1, 1.1, 1.1.1)</label>
+    <label class="chk"><input type="checkbox" id="pages" checked> Show page numbers (dot leaders)</label>
+    <label>Page size <select id="pagew"><option value="9026">A4</option><option value="9360">Letter</option></select></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Style</legend>
+    <label>Font <select id="font">
+      <option>Calibri</option><option>Arial</option><option>Segoe UI</option><option>Georgia</option><option>Times New Roman</option><option>Verdana</option><option>Cambria</option>
+    </select></label>
+    <label>Size (pt) <input type="number" id="size" value="11" min="7" max="24"></label>
+    <label>Link colour <input type="color" id="color" value="#1f2328"></label>
+    <label>Indent per level (pt) <input type="number" id="indent" value="18" min="0" max="60"></label>
+    <label>Space after (pt) <input type="number" id="spacing" value="3" min="0" max="24"></label>
+    <label class="chk"><input type="checkbox" id="boldTop" checked> Bold top-level entries</label>
+    <label class="chk"><input type="checkbox" id="underline"> Underline links</label>
+  </fieldset>
+
+  <div id="preview"><div style="color:#6b7280">Headings will appear here…</div></div>
+
+  <button class="primary" id="insert">Insert at cursor</button>
+  <div class="row2">
+    <button class="ghost" id="refresh">Refresh</button>
+    <button class="ghost" id="scan">Scan headings</button>
+  </div>
+  <button class="ghost" id="detach">Make fully editable (detach)</button>
+  <button class="ghost" id="native" style="margin-top:8px">Insert native TOC (with page numbers)</button>
+  <div class="hint">Page numbers are real Word fields, so they stay accurate when you update them. Text is plain and editable.</div>
+  <div id="status" style="margin-top:10px">Ready.</div>
+
+<script>
+const TAG = "better-toc";
+const $ = id => document.getElementById(id);
+function say(msg, kind){ const s=$("status"); s.textContent=msg; s.className=kind||""; }
+function opts(){
+  return {
+    title:$("title").value.trim(), levels:+$("levels").value, numbering:$("numbering").checked,
+    font:$("font").value, size:+$("size").value, color:$("color").value, indent:+$("indent").value,
+    spacing:+$("spacing").value, pages:$("pages").checked, pagew:+$("pagew").value, boldTop:$("boldTop").checked, underline:$("underline").checked
+  };
+}
+
+Office.onReady(info => {
+  if (info.host !== Office.HostType.Word) { say("This add-in only works in Word.", "err"); return; }
+  $("insert").onclick  = () => build(false);
+  $("refresh").onclick = () => build(true);
+  $("scan").onclick    = () => scan().catch(e => say(e.message,"err"));
+  $("native").onclick  = insertNative;
+  $("detach").onclick  = detach;
+  scan().catch(()=>{});
+});
+
+// ---- read headings -------------------------------------------------------
+async function getHeadings(ctx, maxLevel){
+  const paras = ctx.document.body.paragraphs;
+  paras.load("items/text,items/styleBuiltIn,items/style");
+  await ctx.sync();
+  const out = [];
+  paras.items.forEach((p, idx) => {
+    let m = /^Heading([1-9])$/.exec(p.styleBuiltIn || "");
+    if (!m) m = /^heading ([1-9])$/i.exec(p.style || "");
+    if (!m) return;
+    const level = +m[1], text = p.text.trim();
+    if (level <= maxLevel && text) out.push({ level, text, para: p });
+  });
+  return out;
+}
+
+async function scan(){
+  await Word.run(async ctx => {
+    const hs = await getHeadings(ctx, +$("levels").value);
+    const box = $("preview"); box.innerHTML = "";
+    if (!hs.length) { box.innerHTML = '<div style="color:#6b7280">No headings found. Apply Heading 1/2/3 styles first.</div>'; }
+    hs.forEach(h => { const d=document.createElement("div"); d.style.paddingLeft=(h.level-1)*12+"px"; d.textContent=h.text; box.appendChild(d); });
+    say(hs.length + " heading" + (hs.length===1?"":"s") + " found.", hs.length?"ok":"");
+  });
+}
+
+// ---- build / refresh -----------------------------------------------------
+const esc = t => t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+function rPr(o, e){
+  const bold = e.title ? true : (o.boldTop && e.level === 1);
+  const sz = (e.title ? o.size + 7 : o.size) * 2;
+  const col = (e.title ? "1F2328" : o.color.replace("#",""));
+  return '<w:rPr><w:rFonts w:ascii="'+o.font+'" w:hAnsi="'+o.font+'" w:cs="'+o.font+'"/>' +
+    (bold ? '<w:b/>' : '') + '<w:color w:val="'+col+'"/><w:sz w:val="'+sz+'"/><w:szCs w:val="'+sz+'"/>' +
+    (!e.title && o.underline ? '<w:u w:val="single"/>' : '<w:u w:val="none"/>') + '</w:rPr>';
+}
+
+function tocOoxml(entries, o){
+  const paras = entries.map(e => {
+    const rp = rPr(o, e);
+    if (e.title) {
+      return '<w:p><w:pPr><w:spacing w:before="0" w:after="'+((o.spacing+6)*20)+'"/></w:pPr><w:r>'+rp+'<w:t xml:space="preserve">'+esc(e.text)+'</w:t></w:r></w:p>';
+    }
+    const label = o.numbering ? e.num + "  " + e.text : e.text;
+    const tabs = o.pages ? '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="'+o.pagew+'"/></w:tabs>' : '';
+    const pg = o.pages
+      ? '<w:r>'+rp+'<w:tab/></w:r><w:fldSimple w:instr=" PAGEREF '+e.bm+' \\h " w:dirty="true"><w:r>'+rp+'<w:t>1</w:t></w:r></w:fldSimple>'
+      : '';
+    return '<w:p><w:pPr>'+tabs+'<w:spacing w:before="0" w:after="'+(o.spacing*20)+'"/><w:ind w:left="'+((e.level-1)*o.indent*20)+'"/></w:pPr>' +
+      '<w:hyperlink w:anchor="'+e.bm+'" w:history="1"><w:r>'+rp+'<w:t xml:space="preserve">'+esc(label)+'</w:t></w:r></w:hyperlink>' + pg + '</w:p>';
+  }).join("");
+  return '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">' +
+    '<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part>' +
+    '<pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' + paras + '</w:body></w:document></pkg:xmlData></pkg:part></pkg:package>';
+}
+
+async function build(refresh){
+  const o = opts();
+  try {
+    await Word.run(async ctx => {
+      const hs = await getHeadings(ctx, o.levels);
+      if (!hs.length) { say("No headings found. Apply Heading 1/2/3 styles first.", "err"); return; }
+
+      let cc;
+      const ccs = ctx.document.contentControls.getByTag(TAG);
+      ccs.load("items");
+      await ctx.sync();
+      if (ccs.items.length) {
+        cc = ccs.items[0];
+      } else {
+        if (refresh) { say("No TOC found. Use 'Insert at cursor' first.", "err"); return; }
+        cc = ctx.document.getSelection().insertContentControl();
+        cc.tag = TAG; cc.title = "Table of Contents"; cc.appearance = "BoundingBox";
+      }
+      await ctx.sync();
+
+      const counters = [0,0,0,0,0,0,0,0,0];
+      hs.forEach((h, i) => {
+        h.bm = "toc_" + (i+1);
+        h.para.getRange("Content").insertBookmark(h.bm);
+        counters[h.level-1]++; for (let k=h.level;k<9;k++) counters[k]=0;
+        h.num = counters.slice(0,h.level).map(n=>n||1).join(".");
+      });
+      await ctx.sync();
+
+      const entries = [];
+      if (o.title) entries.push({ title:true, text:o.title });
+      hs.forEach(h => entries.push(h));
+
+      cc.insertOoxml(tocOoxml(entries, o), "Replace");
+      await ctx.sync();
+      say((refresh ? "Refreshed" : "Inserted") + " — " + hs.length + " entries." +
+          (o.pages ? " Page numbers: if they all show 1, right-click the TOC → Update field (or press F9 in desktop Word)." : ""), "ok");
+    });
+  } catch (e) {
+    say("Error: " + (e.message || e), "err");
+  }
+}
+
+// ---- detach: remove wrapper, keep text -------------------------------------
+async function detach(){
+  try {
+    await Word.run(async ctx => {
+      const ccs = ctx.document.contentControls.getByTag(TAG);
+      ccs.load("items");
+      await ctx.sync();
+      if (!ccs.items.length) { say("No custom TOC found (already detached?).", "err"); return; }
+      ccs.items.forEach(cc => cc.delete(true)); // true = keep contents
+      await ctx.sync();
+      say("Detached. It's plain text now, so edit freely. Refresh won't work on it any more.", "ok");
+    });
+  } catch (e) { say("Error: " + (e.message || e), "err"); }
+}
+
+// ---- native field --------------------------------------------------------
+async function insertNative(){
+  const n = +$("levels").value;
+  try {
+    await Word.run(async ctx => {
+      const sel = ctx.document.getSelection();
+      sel.insertField("Start", Word.FieldType.toc, '\\o "1-' + n + '" \\h \\z \\u', true);
+      await ctx.sync();
+      say("Native TOC inserted. Right-click it → Update field to refresh page numbers.", "ok");
+    });
+  } catch (e) {
+    say("Your Word version doesn't support inserting fields from add-ins. Use the custom TOC, or Insert → Table of Contents manually.", "err");
+  }
+}
+</script>
+</body>
+</html>
